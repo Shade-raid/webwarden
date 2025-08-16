@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WebWarden Crawler</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #fff;
+      color: #222;
+      margin: 0;
+      padding: 2rem;
+      text-align: center;
+    }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+    }
+    input, button {
+      padding: 0.5rem;
+      font-size: 1rem;
+      margin: 0.25rem;
+    }
+    #results {
+      max-width: 700px;
+      margin: 2rem auto;
+      text-align: left;
+    }
+    .result {
+      margin-bottom: 1.5rem;
+    }
+    .result a {
+      color: #1a0dab;
+      font-size: 1.1rem;
+      text-decoration: none;
+    }
+    .url {
+      font-size: 0.9rem;
+      color: #006621;
+    }
+    .snippet {
+      font-size: 0.95rem;
+      color: #545454;
+    }
+    #status {
+      margin: 1rem 0;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>WebWarden Crawler</h1>
+  <div>
+    <input id="startUrl" type="text" placeholder="Enter start URL (e.g., https://example.com)" size="40">
+    <input id="depth" type="number" min="1" max="3" value="1">
+    <button onclick="startCrawl()">Start Crawl</button>
+    <button onclick="stopCrawl()">Stop</button>
+  </div>
+  <div>
+    <input id="searchBox" type="text" placeholder="Search crawled pages with WebWarden..." size="50" oninput="searchIndex()">
+  </div>
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <script>
+    let index = [];
+    let visited = new Set();
+    let stopFlag = false;
+    let controller = null;
+
+    function isValidUrl(url) {
+      try {
+        new URL(url);
+        return url.startsWith('http:') || url.startsWith('https:');
+      } catch {
+        return false;
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    async function startCrawl() {
+      const startUrl = document.getElementById('startUrl').value;
+      const depth = parseInt(document.getElementById('depth').value);
+      const statusDiv = document.getElementById('status');
+
+      if (!isValidUrl(startUrl)) {
+        statusDiv.innerText = 'Please enter a valid URL (e.g., https://example.com)';
+        return;
+      }
+      if (isNaN(depth) || depth < 1 || depth > 3) {
+        statusDiv.innerText = 'Please enter a depth between 1 and 3';
+        return;
+      }
+
+      index = [];
+      visited.clear();
+      stopFlag = false;
+      controller = new AbortController();
+      statusDiv.innerText = 'WebWarden is crawling...';
+      document.getElementById('results').innerHTML = '';
+
+      try {
+        await crawl(startUrl, depth, controller.signal);
+        statusDiv.innerText = `WebWarden crawl complete. Indexed ${index.length} pages.`;
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          statusDiv.innerText = 'WebWarden crawl stopped.';
+        } else {
+          statusDiv.innerText = 'WebWarden crawl failed. Please try again.';
+          console.error('Crawl error:', err);
+        }
+      }
+    }
+
+    function stopCrawl() {
+      stopFlag = true;
+      controller?.abort();
+      document.getElementById('status').innerText = 'WebWarden crawl stopped.';
+    }
+
+    async function crawl(url, depth, signal) {
+      if (stopFlag || depth < 0 || visited.has(url) || index.length >= 100) return;
+      visited.add(url);
+
+      try {
+        const res = await fetch(url, { signal });
+        if (!res.ok || !res.headers.get('content-type')?.includes('text/html')) {
+          return;
+        }
+        const text = await res.text();
+        const doc = new DOMParser().parseFromString(text, 'text/html');
+        const title = doc.querySelector('title')?.innerText || url;
+        const description = doc.querySelector('meta[name="description"]')?.content || 
+                           doc.body.innerText.trim().substring(0, 200).replace(/\s+/g, ' ');
+        index.push({ url, title, description });
+
+        if (depth > 0) {
+          const links = [...doc.querySelectorAll('a[href]')]
+            .map(a => {
+              try {
+                return new URL(a.getAttribute('href'), url).href;
+              } catch {
+                return null;
+              }
+            })
+            .filter(link => link && isValidUrl(link) && !visited.has(link));
+          
+          // Concurrently crawl up to 3 links at a time
+          await Promise.all(links.slice(0, 3).map(link => crawl(link, depth - 1, signal)));
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.log('Failed to fetch', url, err);
+      }
+    }
+
+    function searchIndex() {
+      const query = document.getElementById('searchBox').value.toLowerCase();
+      const resultsDiv = document.getElementById('results');
+      resultsDiv.innerHTML = '';
+
+      const results = index.filter(p => 
+        p.title.toLowerCase().includes(query) || 
+        p.description.toLowerCase().includes(query)
+      );
+
+      if (results.length === 0) {
+        resultsDiv.innerText = 'No results found with WebWarden.';
+        return;
+      }
+
+      for (let r of results) {
+        const div = document.createElement('div');
+        div.className = 'result';
+        div.innerHTML = `
+          <a href="${escapeHtml(r.url)}" target="_blank">${escapeHtml(r.title)}</a><br>
+          <div class="url">${escapeHtml(r.url)}</div>
+          <div class="snippet">${escapeHtml(r.description)}</div>
+        `;
+        resultsDiv.appendChild(div);
+      }
+    }
+  </script>
+</body>
+</html>
