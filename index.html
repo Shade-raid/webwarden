@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WebWarden Crawler Classic</title>
   <style>
     body {
@@ -253,10 +254,46 @@
       border: 2px solid #8B4513;
       color: white;
       text-shadow: 1px 1px 2px rgba(0,0,0,0.3);
+      cursor: pointer;
+      transition: all 0.3s ease;
     }
     
     .export-btn:hover {
       background: #DAA520;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 5px rgba(139, 69, 19, 0.3);
+    }
+    
+    .export-btn:active {
+      transform: translateY(0);
+    }
+    
+    mark {
+      background: #FFD700;
+      color: #8B4513;
+      padding: 0 2px;
+      border-radius: 2px;
+    }
+    
+    .advanced-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+    
+    .performance-indicator {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(255, 255, 255, 0.9);
+      padding: 0.5rem;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      font-size: 0.8rem;
+      font-family: monospace;
+      z-index: 999;
+      display: none;
     }
     
     @media (max-width: 768px) {
@@ -275,6 +312,10 @@
       .stats {
         flex-direction: column;
         align-items: center;
+      }
+      
+      .advanced-stats {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -328,412 +369,18 @@
     <div class="export-buttons" id="exportButtons" style="display: none;">
       <button class="export-btn" onclick="exportToCSV()">📊 Export CSV</button>
       <button class="export-btn" onclick="exportToJSON()">📄 Export JSON</button>
+      <button class="export-btn" onclick="window.webWardenApp?.uiController.exportData('xml')">📋 Export XML</button>
       <button class="export-btn" onclick="generateReport()">📋 Generate Report</button>
+    </div>
+    
+    <div class="performance-indicator" id="performanceIndicator">
+      Memory: <span id="memoryUsage">--</span> MB | 
+      Active: <span id="activeRequests">0</span> requests
     </div>
     
     <div id="results"></div>
   </div>
 
-  <script>
-    let index = [];
-    let visited = new Set();
-    let queue = [];
-    let stopFlag = false;
-    let controller = null;
-    let startTime = null;
-    let timerInterval = null;
-    let errors = 0;
-    let crawlStats = { total: 0, processed: 0 };
-
-    function isValidUrl(url) {
-      try {
-        const urlObj = new URL(url);
-        return urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
-      } catch {
-        return false;
-      }
-    }
-
-    function escapeHtml(text) {
-      const div = document.createElement('div');
-      div.textContent = text;
-      return div.innerHTML;
-    }
-
-    function updateStats() {
-      document.getElementById('crawledCount').textContent = index.length;
-      document.getElementById('queueCount').textContent = queue.length;
-      document.getElementById('errorsCount').textContent = errors;
-      
-      if (crawlStats.total > 0) {
-        const progress = (crawlStats.processed / crawlStats.total) * 100;
-        document.getElementById('progressFill').style.width = `${Math.min(progress, 100)}%`;
-      }
-    }
-
-    function startTimer() {
-      startTime = Date.now();
-      timerInterval = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        document.getElementById('elapsedTime').textContent = `${elapsed}s`;
-      }, 1000);
-    }
-
-    function stopTimer() {
-      if (timerInterval) {
-        clearInterval(timerInterval);
-        timerInterval = null;
-      }
-    }
-
-    function setStatus(message, type = '') {
-      const statusDiv = document.getElementById('status');
-      statusDiv.textContent = message;
-      statusDiv.className = type ? `status-${type}` : '';
-    }
-
-    async function startCrawl() {
-      const startUrl = document.getElementById('startUrl').value.trim();
-      const depth = parseInt(document.getElementById('depth').value);
-      const maxPages = parseInt(document.getElementById('maxPages').value);
-      const crawlMode = document.getElementById('crawlMode').value;
-
-      if (!isValidUrl(startUrl)) {
-        setStatus('Please enter a valid URL (e.g., https://example.com)', 'error');
-        return;
-      }
-      
-      if (isNaN(depth) || depth < 1 || depth > 5) {
-        setStatus('Please enter a depth between 1 and 5', 'error');
-        return;
-      }
-      
-      if (isNaN(maxPages) || maxPages < 1 || maxPages > 500) {
-        setStatus('Please enter max pages between 1 and 500', 'error');
-        return;
-      }
-
-      // Reset state
-      index = [];
-      visited.clear();
-      queue = [{ url: startUrl, depth: 0 }];
-      stopFlag = false;
-      errors = 0;
-      crawlStats = { total: maxPages, processed: 0 };
-      controller = new AbortController();
-      
-      document.getElementById('startBtn').disabled = true;
-      document.getElementById('stopBtn').disabled = false;
-      document.getElementById('results').innerHTML = '';
-      document.getElementById('exportButtons').style.display = 'none';
-      
-      setStatus('WebWarden is crawling...', 'crawling');
-      startTimer();
-      updateStats();
-
-      try {
-        if (crawlMode === 'breadth') {
-          await crawlBreadthFirst(depth, maxPages, controller.signal);
-        } else {
-          await crawlDepthFirst(startUrl, depth, maxPages, controller.signal);
-        }
-        
-        if (!stopFlag) {
-          setStatus(`WebWarden crawl complete! Indexed ${index.length} pages with ${errors} errors.`, 'complete');
-          document.getElementById('exportButtons').style.display = 'flex';
-        }
-      } catch (err) {
-        if (err.name === 'AbortError') {
-          setStatus('WebWarden crawl stopped by user.', 'error');
-        } else {
-          setStatus('WebWarden crawl failed. Please try again.', 'error');
-          console.error('Crawl error:', err);
-        }
-      } finally {
-        document.getElementById('startBtn').disabled = false;
-        document.getElementById('stopBtn').disabled = true;
-        stopTimer();
-        updateStats();
-      }
-    }
-
-    async function crawlBreadthFirst(maxDepth, maxPages, signal) {
-      while (queue.length > 0 && !stopFlag && index.length < maxPages) {
-        const batch = queue.splice(0, Math.min(5, queue.length));
-        
-        await Promise.all(batch.map(async ({ url, depth }) => {
-          if (visited.has(url) || index.length >= maxPages) return;
-          
-          try {
-            const pageData = await crawlPage(url, signal);
-            if (pageData) {
-              index.push(pageData);
-              crawlStats.processed++;
-              
-              if (depth < maxDepth) {
-                const links = await extractLinks(url, signal);
-                for (const link of links.slice(0, 10)) {
-                  if (!visited.has(link) && queue.length < maxPages * 2) {
-                    queue.push({ url: link, depth: depth + 1 });
-                  }
-                }
-              }
-            }
-          } catch (err) {
-            if (err.name !== 'AbortError') {
-              errors++;
-              console.log('Failed to crawl:', url, err.message);
-            }
-          }
-          
-          updateStats();
-        }));
-        
-        // Small delay between batches
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-    }
-
-    async function crawlDepthFirst(url, maxDepth, maxPages, signal, currentDepth = 0) {
-      if (stopFlag || currentDepth > maxDepth || visited.has(url) || index.length >= maxPages) {
-        return;
-      }
-
-      try {
-        const pageData = await crawlPage(url, signal);
-        if (pageData) {
-          index.push(pageData);
-          crawlStats.processed++;
-          updateStats();
-
-          if (currentDepth < maxDepth) {
-            const links = await extractLinks(url, signal);
-            for (const link of links.slice(0, 5)) {
-              await crawlDepthFirst(link, maxDepth, maxPages, signal, currentDepth + 1);
-              if (stopFlag || index.length >= maxPages) break;
-            }
-          }
-        }
-      } catch (err) {
-        if (err.name !== 'AbortError') {
-          errors++;
-          console.log('Failed to crawl:', url, err.message);
-        }
-      }
-    }
-
-    async function crawlPage(url, signal) {
-      if (visited.has(url)) return null;
-      visited.add(url);
-
-      const res = await fetch(url, { 
-        signal,
-        headers: {
-          'User-Agent': 'WebWarden Crawler 1.0'
-        }
-      });
-      
-      if (!res.ok || !res.headers.get('content-type')?.includes('text/html')) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      
-      const text = await res.text();
-      const doc = new DOMParser().parseFromString(text, 'text/html');
-      
-      const title = doc.querySelector('title')?.innerText?.trim() || url;
-      const description = doc.querySelector('meta[name="description"]')?.content || 
-                         doc.body?.innerText?.trim().substring(0, 300).replace(/\s+/g, ' ') || '';
-      
-      const keywords = doc.querySelector('meta[name="keywords"]')?.content || '';
-      const h1 = doc.querySelector('h1')?.innerText?.trim() || '';
-      const linkCount = doc.querySelectorAll('a[href]').length;
-      const imageCount = doc.querySelectorAll('img').length;
-      
-      return {
-        url,
-        title,
-        description,
-        keywords,
-        h1,
-        linkCount,
-        imageCount,
-        crawledAt: new Date().toISOString()
-      };
-    }
-
-    async function extractLinks(url, signal) {
-      try {
-        const res = await fetch(url, { signal });
-        const text = await res.text();
-        const doc = new DOMParser().parseFromString(text, 'text/html');
-        const baseUrl = new URL(url);
-        
-        return [...doc.querySelectorAll('a[href]')]
-          .map(a => {
-            try {
-              return new URL(a.getAttribute('href'), url).href;
-            } catch {
-              return null;
-            }
-          })
-          .filter(link => link && isValidUrl(link) && 
-                         new URL(link).hostname === baseUrl.hostname)
-          .slice(0, 20);
-      } catch {
-        return [];
-      }
-    }
-
-    function stopCrawl() {
-      stopFlag = true;
-      controller?.abort();
-      setStatus('WebWarden crawl stopped by user.', 'error');
-    }
-
-    function searchIndex() {
-      const query = document.getElementById('searchBox').value.toLowerCase().trim();
-      const resultsDiv = document.getElementById('results');
-      
-      if (!query) {
-        displayAllResults();
-        return;
-      }
-
-      const results = index.filter(p => 
-        p.title.toLowerCase().includes(query) || 
-        p.description.toLowerCase().includes(query) ||
-        p.url.toLowerCase().includes(query) ||
-        p.keywords.toLowerCase().includes(query)
-      );
-
-      displayResults(results, query);
-    }
-
-    function displayAllResults() {
-      displayResults(index);
-    }
-
-    function displayResults(results, query = '') {
-      const resultsDiv = document.getElementById('results');
-      resultsDiv.innerHTML = '';
-
-      if (results.length === 0) {
-        resultsDiv.innerHTML = '<div style="text-align: center; color: #666; padding: 2rem;">No results found with WebWarden.</div>';
-        return;
-      }
-
-      results.forEach(r => {
-        const div = document.createElement('div');
-        div.className = 'result';
-        
-        let highlightedTitle = r.title;
-        let highlightedDesc = r.description;
-        
-        if (query) {
-          const regex = new RegExp(`(${escapeRegex(query)})`, 'gi');
-          highlightedTitle = highlightedTitle.replace(regex, '<mark>$1</mark>');
-          highlightedDesc = highlightedDesc.replace(regex, '<mark>$1</mark>');
-        }
-        
-        div.innerHTML = `
-          <a href="${escapeHtml(r.url)}" target="_blank" rel="noopener">${highlightedTitle}</a><br>
-          <div class="url">${escapeHtml(r.url)}</div>
-          <div class="snippet">${highlightedDesc}</div>
-          <div class="meta-info">
-            <span>📊 ${r.linkCount} links</span>
-            <span>🖼️ ${r.imageCount} images</span>
-            <span>⏰ ${new Date(r.crawledAt).toLocaleString()}</span>
-            ${r.h1 ? `<span>📝 H1: ${escapeHtml(r.h1.substring(0, 50))}${r.h1.length > 50 ? '...' : ''}</span>` : ''}
-          </div>
-        `;
-        resultsDiv.appendChild(div);
-      });
-    }
-
-    function escapeRegex(string) {
-      return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    }
-
-    function exportToCSV() {
-      if (index.length === 0) return;
-      
-      const headers = ['URL', 'Title', 'Description', 'Keywords', 'H1', 'Link Count', 'Image Count', 'Crawled At'];
-      const csvContent = [
-        headers.join(','),
-        ...index.map(r => [
-          `"${r.url.replace(/"/g, '""')}"`,
-          `"${r.title.replace(/"/g, '""')}"`,
-          `"${r.description.replace(/"/g, '""')}"`,
-          `"${r.keywords.replace(/"/g, '""')}"`,
-          `"${r.h1.replace(/"/g, '""')}"`,
-          r.linkCount,
-          r.imageCount,
-          `"${r.crawledAt}"`
-        ].join(','))
-      ].join('\n');
-      
-      downloadFile(csvContent, 'webwarden-crawl-results.csv', 'text/csv');
-    }
-
-    function exportToJSON() {
-      if (index.length === 0) return;
-      
-      const jsonContent = JSON.stringify({
-        crawledAt: new Date().toISOString(),
-        totalPages: index.length,
-        pages: index
-      }, null, 2);
-      
-      downloadFile(jsonContent, 'webwarden-crawl-results.json', 'application/json');
-    }
-
-    function generateReport() {
-      if (index.length === 0) return;
-      
-      const report = `WebWarden Crawler Report
-Generated: ${new Date().toLocaleString()}
-Total Pages Crawled: ${index.length}
-Errors Encountered: ${errors}
-
-Top Pages by Links:
-${index.sort((a, b) => b.linkCount - a.linkCount).slice(0, 10)
-  .map((p, i) => `${i + 1}. ${p.title} (${p.linkCount} links)\n   ${p.url}`)
-  .join('\n')}
-
-Pages with Most Images:
-${index.sort((a, b) => b.imageCount - a.imageCount).slice(0, 5)
-  .map((p, i) => `${i + 1}. ${p.title} (${p.imageCount} images)\n   ${p.url}`)
-  .join('\n')}
-`;
-      
-      downloadFile(report, 'webwarden-report.txt', 'text/plain');
-    }
-
-    function downloadFile(content, filename, contentType) {
-      const blob = new Blob([content], { type: contentType });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
-
-    // Initialize
-    document.getElementById('searchBox').addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        searchIndex();
-      }
-    });
-    
-    // Show all results when page loads with data
-    window.addEventListener('load', () => {
-      if (index.length > 0) {
-        displayAllResults();
-      }
-    });
-  </script>
+  <script type="module" src="src/main.js"></script>
 </body>
 </html>
